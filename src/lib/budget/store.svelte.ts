@@ -419,6 +419,42 @@ class BudgetStore {
     navigator.clipboard.writeText(lines.join('\n')).catch(() => {});
   }
 
+  exportData() {
+    const payload = {
+      version: STORAGE_KEY,
+      exportedAt: new Date().toISOString(),
+      data: this.data,
+      history: this.history,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `budget-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async importData(file: File): Promise<boolean> {
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      const imported = payload.data as BudgetData;
+      if (!imported || !imported.income || !Array.isArray(imported.expenses)) return false;
+      imported.tags = migrateTags(imported.tags ?? DEFAULT_TAGS);
+      imported.spendingPortions = imported.spendingPortions ?? [];
+      this.data = imported;
+      this.persist();
+      if (Array.isArray(payload.history)) {
+        this.history = payload.history;
+        this.persistHistory();
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private persist() {
     saveData(this.data);
   }

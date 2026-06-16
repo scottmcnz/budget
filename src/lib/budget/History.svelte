@@ -36,7 +36,8 @@
       <p class="empty-hint">Mark a month complete from the Budget tab to save a snapshot here.</p>
     </div>
   {:else}
-    <div class="history-table-wrap">
+    <!-- Desktop table -->
+    <div class="history-table-wrap desktop-hist">
       <table class="history-table">
         <thead>
           <tr>
@@ -94,6 +95,62 @@
         </tbody>
       </table>
     </div>
+
+    <!-- Mobile cards -->
+    <div class="mobile-hist">
+      {#each budget.history as entry (entry.id)}
+        <div class="hist-card" class:hist-card-expanded={expandedId === entry.id}>
+          <div class="hist-card-top">
+            <div class="hist-card-period">{entry.period}</div>
+            <div class="hist-card-date">{fmtDate(entry.completedAt)}</div>
+          </div>
+          <div class="hist-card-stats">
+            <div class="hist-stat">
+              <span class="hist-stat-label">Take-Home</span>
+              <span class="hist-stat-val num">{f0(entry.takeHome)}</span>
+            </div>
+            <div class="hist-stat">
+              <span class="hist-stat-label">Weekly</span>
+              <span class="hist-stat-val num">{f0(entry.weeklySpend)}</span>
+            </div>
+            <div class="hist-stat">
+              <span class="hist-stat-label">Expenses</span>
+              <span class="hist-stat-val num">{f0(entry.totalExpenses)}</span>
+            </div>
+          </div>
+          <div class="hist-card-bottom">
+            <button
+              class="savings-toggle"
+              type="button"
+              onclick={() => toggleExpand(entry.id)}
+              aria-expanded={expandedId === entry.id}
+            >
+              {savingsSummary(entry.savings)}
+            </button>
+            <button
+              class="action-btn action-delete"
+              type="button"
+              onclick={() => {
+                if (confirm(`Delete history for ${entry.period}?`)) {
+                  budget.removeHistoryEntry(entry.id);
+                }
+              }}
+              title="Delete entry"
+            >✕</button>
+          </div>
+          {#if expandedId === entry.id}
+            <ul class="savings-detail">
+              {#each entry.savings as s}
+                <li>
+                  <span>{s.name}</span>
+                  <span class="num">{f0(s.amount)}</span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/each}
+    </div>
   {/if}
 </section>
 
@@ -145,6 +202,15 @@
     font-size: 12px;
     color: var(--fg-4);
     margin: 0;
+  }
+
+  /* ── Desktop table ──────────────────────────────────────────────────── */
+  .desktop-hist { display: block; }
+  .mobile-hist  { display: none; }
+
+  @media (max-width: 599px) {
+    .desktop-hist { display: none !important; }
+    .mobile-hist  { display: flex; flex-direction: column; gap: 8px; padding: 0 12px 12px; }
   }
 
   .history-table-wrap {
@@ -208,6 +274,9 @@
     text-align: left;
     cursor: pointer;
     line-height: 1.4;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
   }
   .savings-toggle:hover { color: var(--amber); }
 
@@ -243,14 +312,71 @@
     background: transparent;
     border: 1px solid var(--border);
     color: var(--fg-3);
-    padding: 4px 10px;
+    padding: 6px 12px;
     border-radius: var(--r-sm);
     cursor: pointer;
     font-family: inherit;
     font-size: 12px;
     font-weight: 500;
     transition: all 0.13s;
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
   .action-delete { color: var(--rose); border-color: transparent; }
   .action-delete:hover { border-color: var(--rose-border); background: var(--rose-soft); }
+
+  /* ── Mobile cards ───────────────────────────────────────────────────── */
+  .hist-card {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .hist-card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .hist-card-period {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .hist-card-date {
+    font-size: 11px;
+    color: var(--fg-4);
+  }
+  .hist-card-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+  }
+  .hist-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .hist-stat-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-4);
+  }
+  .hist-stat-val {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .hist-card-bottom {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
 </style>
