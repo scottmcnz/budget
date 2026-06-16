@@ -1,7 +1,10 @@
+export type TagRole = 'needs' | 'wants' | 'savings' | null;
+
 export interface Tag {
   id: string;
   name: string;
   color: string;  // hex colour
+  role: TagRole;
 }
 
 export interface Expense {
@@ -21,7 +24,7 @@ export interface Income {
   grossPay: number;
   kiwisaverEmployeeRate: number;  // fraction e.g. 0.06
   kiwisaverEmployerRate: number;  // fraction e.g. 0.035
-  /** Weekly spending account transfer amount — user-set round number. */
+  /** Weekly discretionary transfer amount — user-set round number. */
   weeklySpend: number;
   /** Override Monday count for spending pool; null = use calculated. */
   mondayCountOverride?: number | null;

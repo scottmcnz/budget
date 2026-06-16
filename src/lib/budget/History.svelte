@@ -127,7 +127,7 @@
     letter-spacing: -0.01em;
   }
   .panel-sub {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--fg-3);
   }
 
@@ -160,7 +160,7 @@
 
   .history-table th {
     text-align: left;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -223,7 +223,7 @@
     display: flex;
     justify-content: space-between;
     gap: 12px;
-    font-size: 11px;
+    font-size: 12px;
     padding: 3px 0;
     color: var(--fg-2);
   }
@@ -231,7 +231,7 @@
   .date-cell {
     white-space: nowrap;
     color: var(--fg-4);
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .action-cell {
@@ -247,7 +247,7 @@
     border-radius: var(--r-sm);
     cursor: pointer;
     font-family: inherit;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     transition: all 0.13s;
   }

@@ -1,4 +1,4 @@
-import type { BudgetData, Expense, SavingsGoal, SpendingPortion, EventSheet, EventExpense, MoneyIn, Tag, HistoryEntry } from './types';
+import type { BudgetData, Expense, SavingsGoal, SpendingPortion, EventSheet, EventExpense, MoneyIn, Tag, TagRole, HistoryEntry } from './types';
 
 const STORAGE_KEY = 'budget-data-v8';
 const HISTORY_STORAGE_KEY = 'budget-history-v1';
@@ -49,11 +49,26 @@ const TAG_LIFESTYLE  = uid();
 const TAG_SAVINGS    = uid();
 
 const DEFAULT_TAGS: Tag[] = [
-  { id: TAG_FIXED,     name: 'Fixed',     color: '#60a5fa' },
-  { id: TAG_VARIABLE,  name: 'Variable',  color: '#fb923c' },
-  { id: TAG_LIFESTYLE, name: 'Lifestyle', color: '#34d399' },
-  { id: TAG_SAVINGS,   name: 'Savings',   color: '#c084fc' },
+  { id: TAG_FIXED,     name: 'Fixed',     color: '#60a5fa', role: 'needs' },
+  { id: TAG_VARIABLE,  name: 'Variable',  color: '#fb923c', role: 'needs' },
+  { id: TAG_LIFESTYLE, name: 'Lifestyle', color: '#34d399', role: 'wants' },
+  { id: TAG_SAVINGS,   name: 'Savings',   color: '#c084fc', role: 'savings' },
 ];
+
+function inferTagRole(name: string): TagRole {
+  const n = name.trim().toLowerCase();
+  if (n === 'fixed' || n === 'variable') return 'needs';
+  if (n === 'lifestyle') return 'wants';
+  if (n === 'savings') return 'savings';
+  return null;
+}
+
+function migrateTags(tags: Tag[]): Tag[] {
+  return tags.map(tag => ({
+    ...tag,
+    role: tag.role ?? inferTagRole(tag.name),
+  }));
+}
 
 const DEFAULT_DATA: BudgetData = {
   tags: DEFAULT_TAGS,
@@ -84,7 +99,11 @@ function loadData(): BudgetData {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const data = JSON.parse(raw) as BudgetData;
-      return { ...data, spendingPortions: data.spendingPortions ?? [] };
+      return {
+        ...data,
+        tags: migrateTags(data.tags ?? DEFAULT_TAGS),
+        spendingPortions: data.spendingPortions ?? [],
+      };
     }
   } catch { /* ignore */ }
   return structuredClone(DEFAULT_DATA);
@@ -110,19 +129,7 @@ function saveHistory(history: HistoryEntry[]): void {
   } catch { /* ignore */ }
 }
 
-const MON_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-
-function currentPeriodLabel(): string {
-  const now = new Date();
-  const start = now.getDate() >= 14
-    ? new Date(now.getFullYear(), now.getMonth(), 14)
-    : (() => {
-        const pm = now.getMonth() === 0 ? 11 : now.getMonth() - 1;
-        const py = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
-        return new Date(py, pm, 14);
-      })();
-  return `${MON_NAMES[start.getMonth()]} ${start.getFullYear()}`;
-}
+import { currentPeriodLabel } from './dates';
 
 // ─── Reactive store ──────────────────────────────────────────────────────────
 
@@ -189,19 +196,17 @@ class BudgetStore {
     return (this.totalExpenses / 30) * 28;
   }
 
-  // ── Allocation breakdown (for Budget Health) ───────────────────────────────
+  // ── Allocation breakdown (for allocation bar) ─────────────────────────────
 
-  get expensesByCategory() {
-    const needs = this.data.expenses
-      .filter(e => {
-        const tag = this.tagById(e.tagId);
-        return tag?.name === 'Fixed' || tag?.name === 'Variable';
-      })
-      .reduce((s, e) => s + e.amount, 0);
-    const wants = this.data.expenses
-      .filter(e => this.tagById(e.tagId)?.name === 'Lifestyle')
-      .reduce((s, e) => s + e.amount, 0);
-    return { needs, wants };
+  get expensesByTag() {
+    return this.data.tags.map(tag => ({
+      id: tag.id,
+      name: tag.name,
+      color: tag.color,
+      amount: this.data.expenses
+        .filter(e => e.tagId === tag.id)
+        .reduce((s, e) => s + e.amount, 0),
+    }));
   }
 
   // ── Mortgage derived ──────────────────────────────────────────────────────
@@ -225,8 +230,8 @@ class BudgetStore {
     return this.data.tags.find(t => t.id === id);
   }
 
-  addTag(name: string, color: string) {
-    this.data.tags = [...this.data.tags, { id: uid(), name: name.trim(), color }];
+  addTag(name: string, color: string, role: TagRole = null) {
+    this.data.tags = [...this.data.tags, { id: uid(), name: name.trim(), color, role }];
     this.persist();
   }
   updateTag(id: string, patch: Partial<Omit<Tag, 'id'>>) {
@@ -234,6 +239,7 @@ class BudgetStore {
     this.persist();
   }
   removeTag(id: string) {
+    if (this.data.tags.length <= 1) return;
     // reassign expenses using this tag to the first available tag
     const fallback = this.data.tags.find(t => t.id !== id)?.id ?? '';
     this.data.expenses = this.data.expenses.map(e =>

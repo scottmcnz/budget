@@ -1,6 +1,18 @@
 <script lang="ts">
   import { budget } from './lib/budget/store.svelte';
+  import type { TagRole } from './lib/budget/types';
   import History from './lib/budget/History.svelte';
+  import {
+    currentPeriodEnd,
+    currentPeriodLabel,
+    currentPeriodStart,
+    daysBetween,
+    isSameDay,
+    mondaysInRange,
+    nextPaydayFrom,
+    paydayFor,
+    periodFor,
+  } from './lib/budget/dates';
 
   // ── Formatters ────────────────────────────────────────────────────────────
   const f0 = (n: number) =>
@@ -10,28 +22,15 @@
   const sign = (n: number) => (n >= 0 ? '+' : '−');
 
   // ── Date helpers ──────────────────────────────────────────────────────────
-  function mondaysInRange(start: Date, end: Date): Date[] {
-    const out: Date[] = [];
-    const d = new Date(start);
-    const dow = d.getDay();
-    if (dow !== 1) d.setDate(d.getDate() + ((8 - dow) % 7));
-    while (d <= end) { out.push(new Date(d)); d.setDate(d.getDate() + 7); }
-    return out;
-  }
-
-  function periodFor(year: number, month: number) {
-    const start = new Date(year, month, 14);
-    const em = month === 11 ? 0 : month + 1;
-    const ey = month === 11 ? year + 1 : year;
-    return { start, end: new Date(ey, em, 13) };
-  }
-
   const DAY_NAMES       = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   const DAY_NAMES_FULL  = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const MON_NAMES  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
   function fmtDay(d: Date) {
     return `${DAY_NAMES[d.getDay()]} ${d.getDate()} ${MON_NAMES[d.getMonth()]}`;
+  }
+  function fmtFullDate(d: Date) {
+    return `${DAY_NAMES_FULL[d.getDay()]} ${d.getDate()} ${MON_NAMES[d.getMonth()]} ${d.getFullYear()}`;
   }
   function fmtShort(d: Date) {
     return `${d.getDate()} ${MON_NAMES[d.getMonth()]}`;
@@ -44,28 +43,11 @@
   const now   = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-  const pStart = (() => {
-    if (now.getDate() >= 14) return new Date(now.getFullYear(), now.getMonth(), 14);
-    const pm = now.getMonth() === 0 ? 11 : now.getMonth() - 1;
-    const py = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
-    return new Date(py, pm, 14);
-  })();
+  const pStart = currentPeriodStart(now);
+  const pEnd = currentPeriodEnd(pStart);
 
-  const pEnd = (() => {
-    const em = pStart.getMonth() === 11 ? 0 : pStart.getMonth() + 1;
-    const ey = pStart.getMonth() === 11 ? pStart.getFullYear() + 1 : pStart.getFullYear();
-    return new Date(ey, em, 13);
-  })();
-
-  const nextPayday = (() => {
-    const d = new Date(now);
-    if (now.getDate() < 14) d.setDate(14);
-    else d.setMonth(d.getMonth() + 1, 14);
-    return d;
-  })();
-  const daysToPayday = Math.round(
-    (new Date(nextPayday.getFullYear(), nextPayday.getMonth(), nextPayday.getDate()).getTime() - today.getTime()) / 86_400_000
-  );
+  const nextPayday = nextPaydayFrom(today);
+  const daysToPayday = daysBetween(today, nextPayday);
 
   // ── Reactive derived ──────────────────────────────────────────────────────
   let weekly      = $derived(budget.data.income.weeklySpend);
@@ -82,7 +64,7 @@
     String(budget.data.income.mondayCountOverride ?? mondaysInRange(pStart, pEnd).length)
   );
   let mortgageStr      = $state(String(budget.data.mortgage.minimumMonthly));
-  let expensesOverride = $state(String(Math.ceil(budget.totalExpenses)));
+  let editingMortgage  = $state(false);
 
   function saveTakeHome() {
     const v = parseFloat(takeHomeStr);
@@ -108,11 +90,19 @@
   }
   function saveMortgage() {
     const v = Number(mortgageStr);
-    if (!isNaN(v) && v > 0) budget.updateMortgage({ minimumMonthly: v });
+    if (!isNaN(v) && v >= 0) budget.updateMortgage({ minimumMonthly: v });
+  }
+  function startEditMortgage() {
+    mortgageStr = String(budget.data.mortgage.minimumMonthly);
+    editingMortgage = true;
+  }
+  function saveMortgageEdit() {
+    saveMortgage();
+    editingMortgage = false;
   }
 
   // Payday distribution
-  let expensesAmt  = $derived.by(() => { const v = Number(expensesOverride); return isNaN(v) ? budget.totalExpenses : v; });
+  let expensesAmt  = $derived(Math.ceil(budget.totalExpenses));
   let mortgageAmt  = $derived(budget.data.mortgage.minimumMonthly);
   let savingsAmt   = $derived(budget.totalSavings);
 
@@ -120,7 +110,7 @@
   let editSavId     = $state<string | null>(null);
   let editSavName   = $state('');
   let editSavAmount = $state(0);
-  let newSavName    = $state('');
+  let newSavName    = $state('Personal');
   let newSavAmount  = $state(0);
 
   function startEditSav(id: string, name: string, amount: number) {
@@ -133,7 +123,7 @@
   function addSaving() {
     if (!newSavName.trim()) return;
     budget.addSavingsGoal({ name: newSavName.trim(), monthly: newSavAmount });
-    newSavName = ''; newSavAmount = 0;
+    newSavAmount = 0;
   }
   let spendingPool = $derived(weekly * effectiveMondayCount);
   let spendingPortionsAmt = $derived(budget.totalSpendingPortions);
@@ -164,13 +154,14 @@
   let editingId  = $state<string | null>(null);
   let editName   = $state('');
   let editAmount = $state('');
+  let editTagId  = $state('');
 
-  function startEdit(id: string, name: string, amount: number) {
-    editingId = id; editName = name; editAmount = String(amount);
+  function startEdit(id: string, name: string, amount: number, tagId: string) {
+    editingId = id; editName = name; editAmount = String(amount); editTagId = tagId;
   }
   function saveEdit(id: string) {
     const a = parseFloat(editAmount);
-    if (!isNaN(a) && editName.trim()) budget.updateExpense(id, { name: editName.trim(), amount: a });
+    if (!isNaN(a) && editName.trim()) budget.updateExpense(id, { name: editName.trim(), amount: a, tagId: editTagId });
     editingId = null;
   }
 
@@ -182,12 +173,51 @@
 
   let newExpName   = $state('');
   let newExpAmount = $state('');
+  let newExpTag    = $state(budget.data.tags[0]?.id ?? '');
   function addExpense() {
     const a = parseFloat(newExpAmount);
     if (!isNaN(a) && newExpName.trim()) {
-      budget.addExpense({ name: newExpName.trim(), amount: a, tagId: budget.data.tags[0]?.id ?? '' });
+      budget.addExpense({ name: newExpName.trim(), amount: a, tagId: newExpTag });
       newExpName = ''; newExpAmount = '';
     }
+  }
+
+  // ── Category management ───────────────────────────────────────────────────
+  let showCategoryManager = $state(false);
+  let newTagName  = $state('');
+  let newTagColor = $state('#60a5fa');
+  let newTagRole  = $state('');
+
+  function updateTagName(id: string, name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    budget.updateTag(id, { name: trimmed });
+  }
+
+  function setTagRole(id: string, value: string) {
+    budget.updateTag(id, { role: (value || null) as TagRole });
+  }
+
+  function addCategory() {
+    if (!newTagName.trim()) return;
+    budget.addTag(newTagName.trim(), newTagColor, (newTagRole || null) as TagRole);
+    newTagName = '';
+    newTagColor = '#60a5fa';
+    newTagRole = '';
+  }
+
+  function removeCategory(id: string) {
+    const tag = budget.tagById(id);
+    if (!tag) return;
+    if (budget.data.tags.length <= 1) {
+      showToast('Keep at least one category');
+      return;
+    }
+    if (!confirm(`Delete category "${tag.name}"? Expenses will move to another category.`)) return;
+    budget.removeTag(id);
+    const fallback = budget.data.tags[0]?.id ?? '';
+    if (newExpTag === id) newExpTag = fallback;
+    if (editTagId === id) editTagId = fallback;
   }
 
   // ── 6-month lookahead ─────────────────────────────────────────────────────
@@ -214,7 +244,7 @@
     date: Date;
     inMonth: boolean;
     isToday: boolean;
-    isPayday: boolean;    // 14th of any month
+    isPayday: boolean;    // actual pay date (14th, or prior Fri if weekend)
     isMonday: boolean;    // all Mondays = transfer days
     inPeriod: boolean;    // falls within current pay period
   }
@@ -247,11 +277,12 @@
   });
 
   function makeCalDay(d: Date, inMonth: boolean): CalDay {
+    const pay = paydayFor(d.getFullYear(), d.getMonth());
     return {
       date: d,
       inMonth,
-      isToday:   d.getTime() === today.getTime(),
-      isPayday:  d.getDate() === 14,
+      isToday:   isSameDay(d, today),
+      isPayday:  isSameDay(d, pay),
       isMonday:  d.getDay() === 1,
       inPeriod:  d >= pStart && d <= pEnd,
     };
@@ -272,24 +303,38 @@
 
   let colExpenses = $state(false);
   let colCalendar = $state(false);
+  let colSavings       = $state(true);
+  let colDiscretionary = $state(true);
 
-  // ── Budget Health (50/30/20) ────────────────────────────────────────────
-  let healthNeeds = $derived(budget.expensesByCategory.needs + budget.data.mortgage.minimumMonthly);
-  let healthWants = $derived(budget.expensesByCategory.wants + totalSpendingAccount);
-  let healthSavings = $derived(budget.totalSavings);
-  let healthTotal = $derived(budget.takeHome);
-  let healthNeedsPct = $derived(healthTotal > 0 ? (healthNeeds / healthTotal) * 100 : 0);
-  let healthWantsPct = $derived(healthTotal > 0 ? (healthWants / healthTotal) * 100 : 0);
-  let healthSavingsPct = $derived(healthTotal > 0 ? (healthSavings / healthTotal) * 100 : 0);
-  let healthBufferPct = $derived(Math.max(0, 100 - healthNeedsPct - healthWantsPct - healthSavingsPct));
+  // ── Allocation bar ──────────────────────────────────────────────────────
+  let allocationTotal = $derived(budget.takeHome);
+  let allocationSegments = $derived.by(() => {
+    const segments = budget.expensesByTag
+      .filter(t => t.amount > 0)
+      .map(t => ({ id: t.id, name: t.name, color: t.color, amount: t.amount }));
+
+    if (budget.totalSavings > 0) {
+      segments.push({ id: '__savings__', name: 'Savings', color: '#c084fc', amount: budget.totalSavings });
+    }
+    if (mortgageAmt > 0) {
+      segments.push({ id: '__mortgage__', name: 'Mortgage', color: '#60a5fa', amount: mortgageAmt });
+    }
+    if (totalSpendingAccount > 0) {
+      segments.push({ id: '__spending__', name: 'Discretionary', color: '#34d399', amount: totalSpendingAccount });
+    }
+    if (buffer > 0) {
+      segments.push({ id: '__buffer__', name: 'Buffer', color: 'var(--surface-4)', amount: buffer });
+    }
+    segments.sort((a, b) => b.amount - a.amount);
+    return segments;
+  });
+
+  function allocationPct(amount: number): number {
+    return allocationTotal > 0 ? (amount / allocationTotal) * 100 : 0;
+  }
 
   // ── Navigation ────────────────────────────────────────────────────────────
   let activeTab = $state<'budget' | 'history'>('budget');
-
-  function currentPeriodLabel(): string {
-    const start = pStart;
-    return `${MON_NAMES[start.getMonth()]} ${start.getFullYear()}`;
-  }
 
   function markMonthComplete() {
     const period = currentPeriodLabel();
@@ -312,53 +357,78 @@
 
   <!-- ══════════════════════ HEADER ══════════════════════════════════════ -->
   <header>
-    <div class="h-left">
-      <span class="wordmark">budget</span>
-      <div class="h-divider"></div>
-      <nav class="tab-nav">
-        <button
-          class="tab-btn"
-          class:tab-active={activeTab === 'budget'}
-          type="button"
-          onclick={() => activeTab = 'budget'}
-        >Budget</button>
-        <button
-          class="tab-btn"
-          class:tab-active={activeTab === 'history'}
-          type="button"
-          onclick={() => activeTab = 'history'}
-        >History</button>
-      </nav>
-      {#if activeTab === 'budget'}
+    <div class="header-top">
+      <div class="h-left">
+        <span class="wordmark">budget</span>
         <div class="h-divider"></div>
-        <div class="payday-badge" class:payday-soon={daysToPayday <= 3} class:payday-today={daysToPayday === 0}>
-          {#if daysToPayday === 0}
-            <span class="badge-dot"></span>payday today
-          {:else if daysToPayday === 1}
-            <span class="badge-dot"></span>payday tomorrow
+        <nav class="tab-nav">
+          <button
+            class="tab-btn"
+            class:tab-active={activeTab === 'budget'}
+            type="button"
+            onclick={() => activeTab = 'budget'}
+          >Budget</button>
+          <button
+            class="tab-btn"
+            class:tab-active={activeTab === 'history'}
+            type="button"
+            onclick={() => activeTab = 'history'}
+          >History</button>
+        </nav>
+        {#if activeTab === 'budget'}
+          <div class="h-divider"></div>
+          <div class="payday-badge" class:payday-soon={daysToPayday <= 3} class:payday-today={daysToPayday === 0}>
+            {#if daysToPayday === 0}
+              <span class="badge-dot"></span>payday today
+            {:else if daysToPayday === 1}
+              <span class="badge-dot"></span>payday tomorrow
+            {:else}
+              payday in {daysToPayday}d
+            {/if}
+          </div>
+        {/if}
+      </div>
+
+      <div class="h-right">
+        {#if activeTab === 'budget'}
+          {#if editingMortgage}
+            <div class="toolbar-mortgage toolbar-mortgage-edit">
+              <span class="toolbar-mortgage-label">Mortgage</span>
+              <div class="dist-field toolbar-mortgage-field">
+                <span class="field-pre">$</span>
+                <input class="field-inp num" type="number" min="0" step="1" bind:value={mortgageStr}
+                  onkeydown={e => { if (e.key === 'Enter') saveMortgageEdit(); if (e.key === 'Escape') editingMortgage = false; }} />
+              </div>
+              <button class="action-btn action-confirm" onclick={saveMortgageEdit}>Save</button>
+              <button class="action-btn action-cancel" onclick={() => editingMortgage = false}>✕</button>
+            </div>
           {:else}
-            payday in {daysToPayday}d
+            <button class="toolbar-mortgage" type="button" onclick={startEditMortgage} title="Edit mortgage">
+              <span class="toolbar-mortgage-label">Mortgage</span>
+              <span class="toolbar-mortgage-amt num">{f0(mortgageAmt)}</span>
+              <span class="toolbar-mortgage-action">Edit</span>
+            </button>
           {/if}
-        </div>
-      {/if}
+          <div class="remaining-stat" class:stat-pos={budget.remaining >= 0} class:stat-neg={budget.remaining < 0}>
+            <span class="stat-sign">{sign(budget.remaining)}</span>{f0(budget.remaining)}
+            <span class="stat-freq">/mo</span>
+          </div>
+          <button class="icon-btn icon-btn-complete" onclick={markMonthComplete} title="Mark month complete">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          </button>
+          <button class="icon-btn" onclick={() => { budget.copyTextSummary(); showToast('Summary copied'); }} title="Copy summary">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+          <button class="icon-btn icon-btn-danger" onclick={() => { if (confirm('Reset all data to defaults?')) { budget.resetToDefaults(); showToast('Reset complete'); } }} title="Reset">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.16"/></svg>
+          </button>
+        {/if}
+      </div>
     </div>
 
-    <div class="h-right">
-      {#if activeTab === 'budget'}
-        <div class="remaining-stat" class:stat-pos={budget.remaining >= 0} class:stat-neg={budget.remaining < 0}>
-          <span class="stat-sign">{sign(budget.remaining)}</span>{f0(budget.remaining)}
-          <span class="stat-freq">/mo</span>
-        </div>
-        <button class="icon-btn icon-btn-complete" onclick={markMonthComplete} title="Mark month complete">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-        </button>
-        <button class="icon-btn" onclick={() => { budget.copyTextSummary(); showToast('Summary copied'); }} title="Copy summary">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-        </button>
-        <button class="icon-btn icon-btn-danger" onclick={() => { if (confirm('Reset all data to defaults?')) { budget.resetToDefaults(); showToast('Reset complete'); } }} title="Reset">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.16"/></svg>
-        </button>
-      {/if}
+    <div class="period-bar">
+      <span class="period-date">{fmtFullDate(today)}</span>
+      <span class="period-range">Period: {fmtPeriod(pStart, pEnd)}</span>
     </div>
   </header>
 
@@ -386,7 +456,7 @@
           />
           <span class="metric-unit">/mo</span>
         </div>
-        <p class="metric-hint">Paid 14th · edit when it changes</p>
+        <p class="metric-hint">Paid 14th (Fri if weekend) · edit when it changes</p>
       </div>
 
       <div class="metric-card">
@@ -434,46 +504,26 @@
 
     </div>
 
-    <!-- ── Budget Health ─────────────────────────────────────────────── -->
+    <!-- ── Allocation bar ─────────────────────────────────────────────── -->
     <div class="health-panel">
       <div class="health-bar">
-        <div class="health-seg health-needs" style="width:{healthNeedsPct}%"></div>
-        <div class="health-seg health-wants" style="width:{healthWantsPct}%"></div>
-        <div class="health-seg health-savings" style="width:{healthSavingsPct}%"></div>
-        <div class="health-seg health-buffer" style="width:{healthBufferPct}%"></div>
-        <div class="health-target" style="left:50%" title="50% target (Needs)"></div>
-        <div class="health-target" style="left:80%" title="80% target (Needs + Wants)"></div>
+        {#each allocationSegments as seg (seg.id)}
+          <div class="health-seg" style="width:{allocationPct(seg.amount)}%; background:{seg.color}" data-tip="{seg.name} · {f0(seg.amount)} ({Math.round(allocationPct(seg.amount))}%)"></div>
+        {/each}
       </div>
       <div class="health-labels">
-        <div class="health-label">
-          <span class="health-dot health-dot-needs"></span>
-          <span class="health-name">Needs</span>
-          <span class="health-pct num">{Math.round(healthNeedsPct)}%</span>
-          <span class="health-amt num">{f0(healthNeeds)}</span>
-        </div>
-        <div class="health-label">
-          <span class="health-dot health-dot-wants"></span>
-          <span class="health-name">Wants</span>
-          <span class="health-pct num">{Math.round(healthWantsPct)}%</span>
-          <span class="health-amt num">{f0(healthWants)}</span>
-        </div>
-        <div class="health-label">
-          <span class="health-dot health-dot-savings"></span>
-          <span class="health-name">Savings</span>
-          <span class="health-pct num">{Math.round(healthSavingsPct)}%</span>
-          <span class="health-amt num">{f0(healthSavings)}</span>
-        </div>
-        <div class="health-label">
-          <span class="health-dot health-dot-buffer"></span>
-          <span class="health-name">Buffer</span>
-          <span class="health-pct num">{Math.round(healthBufferPct)}%</span>
-          <span class="health-amt num">{f0(healthTotal - healthNeeds - healthWants - healthSavings)}</span>
-        </div>
-      </div>
-      <div class="health-targets-legend">
-        <span class="health-target-label">50/30/20 targets</span>
-        <span class="health-target-item"><span class="target-tick"></span>50% needs</span>
-        <span class="health-target-item"><span class="target-tick"></span>80% needs+wants</span>
+        {#each allocationSegments as seg (seg.id)}
+          <div class="health-label">
+            <span
+              class="health-dot"
+              class:health-dot-buffer={seg.id === '__buffer__'}
+              style={seg.id !== '__buffer__' ? `background:${seg.color}` : undefined}
+            ></span>
+            <span class="health-name">{seg.name}</span>
+            <span class="health-pct num">{Math.round(allocationPct(seg.amount))}%</span>
+            <span class="health-amt num">{f0(seg.amount)}</span>
+          </div>
+        {/each}
       </div>
     </div>
 
@@ -486,7 +536,7 @@
           onkeydown={e => e.key === 'Enter' && (colPayday = !colPayday)}>
           <div class="ph-left">
             <h2 class="panel-title">Payday Distribution</h2>
-            <span class="panel-sub">14th of each month</span>
+            <span class="panel-sub">14th of each month (Fri if weekend)</span>
           </div>
           <div class="ph-right">
             {#if colPayday}<span class="panel-peek num">{f0(totalSpendingAccount)} spending · {sign(buffer)}{f0(buffer)} buffer</span>{/if}
@@ -500,21 +550,30 @@
         <div class="dist-table">
           <div class="dist-row">
             <span class="dist-label">Mortgage</span>
-            <div class="dist-field">
-              <span class="field-pre">$</span>
-              <input class="field-inp num" type="number" min="0" step="1" bind:value={mortgageStr} oninput={saveMortgage} />
-            </div>
+            <span class="dist-val num">{f0(mortgageAmt)}</span>
           </div>
           <div class="dist-row">
-            <span class="dist-label">Expenses <span class="dist-sub">round up if needed</span></span>
-            <div class="dist-field">
-              <span class="field-pre">$</span>
-              <input class="field-inp num" type="number" min="0" step="1" bind:value={expensesOverride} />
-            </div>
+            <span class="dist-label">Expenses</span>
+            <span class="dist-val num">{f0(expensesAmt)}</span>
           </div>
-          <!-- Savings list -->
-          <div class="dist-sav-section">
-            <span class="dist-sav-head">Savings <span class="dist-sav-total num">{f0(savingsAmt)}</span></span>
+          <!-- Savings -->
+          <div
+            class="dist-row dist-row-toggle"
+            role="button"
+            tabindex="0"
+            onclick={() => colSavings = !colSavings}
+            onkeydown={e => e.key === 'Enter' && (colSavings = !colSavings)}
+          >
+            <span class="dist-label">
+              <span class="chevron chevron-sm" class:chevron-up={!colSavings}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+              </span>
+              Savings
+            </span>
+            <span class="dist-val num">{f0(savingsAmt)}</span>
+          </div>
+          {#if !colSavings}
+          <div class="dist-detail">
             {#each budget.data.savings as g (g.id)}
               {#if editSavId === g.id}
                 <div class="dist-sav-row dist-sav-editing">
@@ -539,11 +598,10 @@
             {/each}
             <div class="dist-sav-row dist-sav-add">
               <select class="sav-inp sav-inp-name sav-select" bind:value={newSavName}>
-                <option value="" disabled selected>Savings account</option>
-                <option>Personal</option>
-                <option>Emergency</option>
-                <option>Fund Fund</option>
-                <option>House Fund</option>
+                <option value="Personal">Personal</option>
+                <option value="Emergency">Emergency</option>
+                <option value="Fund Fund">Fund Fund</option>
+                <option value="House Fund">House Fund</option>
               </select>
               <div class="dist-field sav-inp-amt-wrap">
                 <span class="field-pre">$</span>
@@ -553,12 +611,25 @@
               <button class="action-btn action-add" onclick={addSaving}>Add</button>
             </div>
           </div>
-          <div class="dist-sep"></div>
-          <div class="dist-spend-section">
-            <div class="dist-row dist-row-accent">
-              <span class="dist-label">Spending account <span class="dist-pill">{effectiveMondayCount}×{f0(weekly)}</span></span>
-              <span class="dist-val num dist-val-accent">{f0(totalSpendingAccount)}</span>
-            </div>
+          {/if}
+          <!-- Discretionary -->
+          <div
+            class="dist-row dist-row-toggle"
+            role="button"
+            tabindex="0"
+            onclick={() => colDiscretionary = !colDiscretionary}
+            onkeydown={e => e.key === 'Enter' && (colDiscretionary = !colDiscretionary)}
+          >
+            <span class="dist-label">
+              <span class="chevron chevron-sm" class:chevron-up={!colDiscretionary}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+              </span>
+              Discretionary <span class="dist-pill">{effectiveMondayCount}×{f0(weekly)}</span>
+            </span>
+            <span class="dist-val num">{f0(totalSpendingAccount)}</span>
+          </div>
+          {#if !colDiscretionary}
+          <div class="dist-detail">
             {#if spendingPortionsAmt > 0}
               <div class="dist-spend-sub num">{f0(spendingPool)} transfers + {f0(spendingPortionsAmt)} portions</div>
             {/if}
@@ -595,6 +666,7 @@
               <button class="action-btn action-add" onclick={addSpendingPortion}>Add</button>
             </div>
           </div>
+          {/if}
           <div class="dist-row dist-row-buffer" class:buf-pos={buffer >= 0} class:buf-neg={buffer < 0}>
             <span class="dist-label">Buffer <span class="dist-sub">stays in main account</span></span>
             <span class="dist-val num">{sign(buffer)}{f0(buffer)}</span>
@@ -622,6 +694,15 @@
           </div>
           <div class="ph-right">
             {#if colExpenses}<span class="panel-peek">{budget.data.expenses.length} items</span>{/if}
+            <button class="sort-btn" class:sort-active={showCategoryManager}
+              onclick={e => { e.stopPropagation(); showCategoryManager = !showCategoryManager; }}
+              aria-label="Manage categories" title="Manage categories">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 8 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 8a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 8 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 8a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+              <span class="sort-label">Categories</span>
+            </button>
             <button class="sort-btn" class:sort-active={expSortByAmount}
               onclick={e => { e.stopPropagation(); expSortByAmount = !expSortByAmount; }}
               aria-label="Sort by amount">
@@ -638,10 +719,81 @@
         </header>
 
         {#if !colExpenses}
+        {#if showCategoryManager}
+        <div class="cat-manager">
+          <div class="cat-manager-head">
+            <span>Manage Categories</span>
+          </div>
+          {#each budget.data.tags as tag (tag.id)}
+            <div class="cat-row">
+              <input
+                class="cat-color"
+                type="color"
+                value={tag.color}
+                aria-label="Category colour"
+                oninput={e => budget.updateTag(tag.id, { color: e.currentTarget.value })}
+              />
+              <input
+                class="cat-inp cat-inp-name"
+                value={tag.name}
+                aria-label="Category name"
+                onblur={e => updateTagName(tag.id, e.currentTarget.value)}
+                onkeydown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+              />
+              <select
+                class="cat-inp cat-inp-role"
+                value={tag.role ?? ''}
+                aria-label="Category role"
+                onchange={e => setTagRole(tag.id, e.currentTarget.value)}
+              >
+                <option value="">None</option>
+                <option value="needs">Needs</option>
+                <option value="wants">Wants</option>
+                <option value="savings">Savings</option>
+              </select>
+              <button
+                class="action-btn action-delete"
+                onclick={() => removeCategory(tag.id)}
+                disabled={budget.data.tags.length <= 1}
+                aria-label="Delete category"
+              >✕</button>
+            </div>
+          {/each}
+          <div class="cat-row cat-row-add">
+            <input
+              class="cat-color"
+              type="color"
+              bind:value={newTagColor}
+              aria-label="New category colour"
+            />
+            <input
+              class="cat-inp cat-inp-name"
+              bind:value={newTagName}
+              placeholder="New category"
+              onkeydown={e => e.key === 'Enter' && addCategory()}
+            />
+            <select class="cat-inp cat-inp-role" bind:value={newTagRole}>
+              <option value="">None</option>
+              <option value="needs">Needs</option>
+              <option value="wants">Wants</option>
+              <option value="savings">Savings</option>
+            </select>
+            <button class="action-btn action-add" onclick={addCategory}>Add</button>
+          </div>
+        </div>
+        {/if}
         <div class="exp-table">
           {#each sortedExpenses as exp (exp.id)}
             {#if editingId === exp.id}
               <div class="exp-row exp-editing">
+                <label class="exp-tag-select">
+                  <span class="exp-tag-dot" style="background:{budget.tagById(editTagId)?.color ?? 'var(--fg-4)'}"></span>
+                  <select class="exp-tag-sel" bind:value={editTagId} aria-label="Category">
+                    {#each budget.data.tags as tag (tag.id)}
+                      <option value={tag.id}>{tag.name}</option>
+                    {/each}
+                  </select>
+                </label>
                 <input class="exp-inp exp-inp-name" bind:value={editName}
                   onkeydown={e => { if (e.key === 'Enter') saveEdit(exp.id); if (e.key === 'Escape') editingId = null; }} />
                 <input class="exp-inp exp-inp-amt num" type="number" min="0" step="1" bind:value={editAmount}
@@ -654,13 +806,21 @@
                 <span class="exp-tag-dot" style="background:{budget.tagById(exp.tagId)?.color ?? 'var(--fg-4)'}"></span>
                 <span class="exp-name">{exp.name}</span>
                 <span class="exp-amt num">{f0(exp.amount)}</span>
-                <button class="action-btn action-edit" onclick={() => startEdit(exp.id, exp.name, exp.amount)}>Edit</button>
+                <button class="action-btn action-edit" onclick={() => startEdit(exp.id, exp.name, exp.amount, exp.tagId)}>Edit</button>
                 <button class="action-btn action-delete" onclick={() => budget.removeExpense(exp.id)}>✕</button>
               </div>
             {/if}
           {/each}
         </div>
         <div class="exp-add-row">
+          <label class="exp-tag-select">
+            <span class="exp-tag-dot" style="background:{budget.tagById(newExpTag)?.color ?? 'var(--fg-4)'}"></span>
+            <select class="exp-tag-sel" bind:value={newExpTag} aria-label="Category">
+              {#each budget.data.tags as tag (tag.id)}
+                <option value={tag.id}>{tag.name}</option>
+              {/each}
+            </select>
+          </label>
           <input class="exp-inp exp-inp-name" bind:value={newExpName} placeholder="New expense"
             onkeydown={e => e.key === 'Enter' && addExpense()} />
           <input class="exp-inp exp-inp-amt num" type="number" min="0" step="1" bind:value={newExpAmount} placeholder="0"
@@ -777,16 +937,34 @@
   /* ══════════════════ HEADER ══════════════════════════════════════════════ */
   header {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    height: 52px;
-    padding: 0 24px;
+    flex-direction: column;
     background: var(--bg-raised);
     border-bottom: 1px solid var(--border);
     position: sticky;
     top: 0;
     z-index: 200;
     backdrop-filter: blur(12px);
+  }
+
+  .header-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 52px;
+    padding: 0 24px;
+  }
+
+  .period-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px 8px;
+    font-size: 12px;
+    color: var(--fg-3);
+  }
+
+  .period-range {
+    color: var(--fg-4);
   }
 
   .h-left  { display: flex; align-items: center; gap: 14px; }
@@ -856,10 +1034,56 @@
     background: var(--surface);
     font-variant-numeric: tabular-nums;
   }
+
+  .toolbar-mortgage {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: var(--r-md);
+    border: 1px solid var(--border-2);
+    background: var(--surface);
+    color: var(--fg-3);
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .toolbar-mortgage:hover {
+    color: var(--fg-2);
+    border-color: var(--border-2);
+    background: var(--surface-2);
+  }
+  .toolbar-mortgage-edit {
+    cursor: default;
+  }
+  .toolbar-mortgage-edit:hover {
+    background: var(--surface);
+  }
+  .toolbar-mortgage-label {
+    font-weight: 600;
+    color: var(--fg-3);
+    letter-spacing: 0.02em;
+  }
+  .toolbar-mortgage-amt {
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .toolbar-mortgage-action {
+    font-size: 11px;
+    color: var(--fg-4);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .toolbar-mortgage-field .field-inp {
+    width: 72px;
+    padding: 5px 8px;
+  }
+
   .remaining-stat.stat-pos { color: var(--emerald); border-color: var(--emerald-border); background: var(--emerald-soft); }
   .remaining-stat.stat-neg { color: var(--rose); border-color: var(--rose-border); background: var(--rose-soft); }
-  .stat-sign { font-size: 11px; margin-right: 1px; }
-  .stat-freq { font-size: 11px; font-weight: 400; color: inherit; opacity: 0.7; margin-left: 2px; }
+  .stat-sign { font-size: 12px; margin-right: 1px; }
+  .stat-freq { font-size: 12px; font-weight: 400; color: inherit; opacity: 0.7; margin-left: 2px; }
 
   .icon-btn {
     display: flex; align-items: center; justify-content: center;
@@ -930,12 +1154,12 @@
     white-space: nowrap;
   }
   .panel-sub {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--fg-3);
     white-space: nowrap;
   }
   .panel-peek {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--fg-4);
     white-space: nowrap;
   }
@@ -985,13 +1209,13 @@
     margin-bottom: 8px;
   }
   .metric-label {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.07em;
     color: var(--fg-3);
   }
-  .metric-aux { font-size: 11px; color: var(--fg-4); }
+  .metric-aux { font-size: 12px; color: var(--fg-4); }
 
   .metric-input-group {
     display: flex;
@@ -1027,7 +1251,7 @@
   input[type="number"] { -moz-appearance: textfield; }
   .metric-input[type=number] { -moz-appearance: textfield; appearance: textfield; }
   .metric-unit { font-size: 14px; color: var(--fg-4); font-weight: 400; }
-  .metric-hint { font-size: 11px; color: var(--fg-4); margin-top: 10px; }
+  .metric-hint { font-size: 12px; color: var(--fg-4); margin-top: 10px; }
   .monday-hint {
     display: flex;
     align-items: center;
@@ -1041,7 +1265,7 @@
     border-radius: var(--r-sm);
     color: var(--fg-2);
     font-family: inherit;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     padding: 1px 4px;
     text-align: center;
@@ -1055,7 +1279,7 @@
     border: none;
     color: var(--fg-4);
     font-family: inherit;
-    font-size: 10px;
+    font-size: 11px;
     cursor: pointer;
     padding: 0;
     text-decoration: underline;
@@ -1083,7 +1307,7 @@
   }
   .stat-line span:last-child { color: var(--fg-2); }
 
-  /* ══════════════════ BUDGET HEALTH ══════════════════════════════════════ */
+  /* ══════════════════ ALLOCATION BAR ═════════════════════════════════════ */
   .health-panel {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -1096,28 +1320,44 @@
     display: flex;
     height: 10px;
     border-radius: 5px;
-    overflow: hidden;
     background: var(--surface-3);
   }
+  .health-bar::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 5px;
+    pointer-events: none;
+    z-index: 1;
+  }
   .health-seg {
+    position: relative;
     height: 100%;
     min-width: 2px;
     transition: width 0.3s ease;
   }
-  .health-needs   { background: var(--blue, #60a5fa); }
-  .health-wants   { background: var(--emerald); }
-  .health-savings { background: var(--purple, #c084fc); }
-  .health-buffer  { background: var(--surface-4); }
-
-  .health-target {
+  .health-seg:first-child { border-radius: 5px 0 0 5px; }
+  .health-seg:last-child  { border-radius: 0 5px 5px 0; }
+  .health-seg:first-child:last-child { border-radius: 5px; }
+  .health-seg::after {
+    content: attr(data-tip);
     position: absolute;
-    top: -3px;
-    bottom: -3px;
-    width: 2px;
-    background: var(--fg-4);
-    opacity: 0.5;
-    border-radius: 1px;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    white-space: nowrap;
+    background: var(--surface);
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-sm);
+    padding: 4px 8px;
+    font-size: 11px;
+    color: var(--fg-2);
     pointer-events: none;
+    opacity: 0;
+    z-index: 10;
+  }
+  .health-seg:hover::after {
+    opacity: 1;
   }
 
   .health-labels {
@@ -1138,41 +1378,10 @@
     border-radius: 50%;
     flex-shrink: 0;
   }
-  .health-dot-needs   { background: var(--blue, #60a5fa); }
-  .health-dot-wants   { background: var(--emerald); }
-  .health-dot-savings { background: var(--purple, #c084fc); }
-  .health-dot-buffer  { background: var(--surface-4); border: 1px solid var(--border-2); }
+  .health-dot-buffer { background: var(--surface-4); border: 1px solid var(--border-2); }
   .health-name { color: var(--fg-2); font-weight: 500; }
   .health-pct  { font-weight: 600; color: var(--fg); }
-  .health-amt  { color: var(--fg-4); font-size: 11px; }
-
-  .health-targets-legend {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px solid var(--border);
-    font-size: 10px;
-    color: var(--fg-4);
-  }
-  .health-target-label {
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-  .health-target-item {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-  .target-tick {
-    width: 2px;
-    height: 10px;
-    background: var(--fg-4);
-    opacity: 0.5;
-    border-radius: 1px;
-  }
+  .health-amt  { color: var(--fg-4); font-size: 12px; }
 
   /* ══════════════════ GRID LAYOUTS ═══════════════════════════════════════ */
   .two-col {
@@ -1200,6 +1409,33 @@
   }
   .dist-row:nth-child(even) { background: var(--surface-2); }
 
+  .dist-row-toggle {
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.13s;
+  }
+  .dist-row-toggle:hover { background: var(--surface-3); }
+
+  .chevron-sm {
+    display: inline-flex;
+    align-items: center;
+    color: var(--fg-4);
+    transition: transform 0.2s cubic-bezier(0.4,0,0.2,1);
+    transform: rotate(0deg);
+    flex-shrink: 0;
+  }
+  .chevron-sm.chevron-up { transform: rotate(180deg); }
+
+  .dist-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 0 8px 8px 20px;
+    margin: -2px 0 2px;
+    border-left: 2px solid var(--border-2);
+    margin-left: 8px;
+  }
+
   .dist-label {
     font-size: 13px;
     color: var(--fg-2);
@@ -1209,7 +1445,7 @@
     flex: 1;
   }
   .dist-sub {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--fg-4);
     font-style: italic;
   }
@@ -1255,18 +1491,13 @@
     text-align: right;
   }
 
-  .dist-sep {
-    height: 1px;
-    background: var(--border-2);
-    margin: 4px 0;
+  .dist-spend-sub {
+    font-size: 11px;
+    color: var(--fg-4);
+    padding: 0 6px 4px;
+    text-align: right;
   }
 
-  .dist-row-accent .dist-label { color: var(--fg); font-weight: 600; }
-  .dist-val-accent {
-    font-size: 16px;
-    color: var(--amber) !important;
-    font-weight: 700;
-  }
   .dist-pill {
     display: inline-flex;
     align-items: center;
@@ -1274,7 +1505,7 @@
     border: 1px solid var(--amber-border);
     color: var(--amber);
     border-radius: 4px;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     padding: 1px 6px;
     letter-spacing: 0.02em;
@@ -1299,39 +1530,6 @@
     color: var(--fg);
   }
 
-  /* ── Spending sub-list inside dist panel ─── */
-  .dist-spend-section {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 0 0 6px;
-  }
-  .dist-spend-sub {
-    font-size: 10px;
-    color: var(--fg-4);
-    padding: 0 8px 4px;
-    text-align: right;
-  }
-
-  /* ── Savings sub-list inside dist panel ─── */
-  .dist-sav-section {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 6px 0 6px;
-    border-top: 1px solid var(--border-2);
-    border-bottom: 1px solid var(--border-2);
-    margin: 2px 0;
-  }
-  .dist-sav-head {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--fg-3);
-    display: flex;
-    justify-content: space-between;
-    padding: 2px 0 4px;
-  }
-  .dist-sav-total { color: var(--fg-2); }
   .dist-sav-row {
     display: grid;
     grid-template-columns: 1fr auto auto auto;
@@ -1395,7 +1593,7 @@
     border: 1px solid var(--border);
     border-radius: var(--r-sm);
     color: var(--fg-4);
-    font-size: 11px;
+    font-size: 12px;
     font-family: inherit;
     cursor: pointer;
     transition: all 0.13s;
@@ -1403,6 +1601,68 @@
   .sort-btn:hover { color: var(--fg-2); border-color: var(--border-2); background: var(--surface-2); }
   .sort-btn.sort-active { color: var(--amber); border-color: var(--amber-border); background: var(--amber-soft); }
   .sort-label { letter-spacing: 0.02em; }
+
+  .cat-manager {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-raised);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .cat-manager-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-4);
+  }
+  .cat-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .cat-row-add {
+    padding-top: 4px;
+    border-top: 1px dashed var(--border-2);
+    margin-top: 2px;
+  }
+  .cat-color {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-sm);
+    background: transparent;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .cat-inp {
+    background: var(--surface-3);
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-sm);
+    color: var(--fg);
+    font-family: inherit;
+    font-size: 13px;
+    padding: 6px 10px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .cat-inp:focus { border-color: var(--amber-border); }
+  .cat-inp-name { flex: 1; min-width: 0; }
+  .cat-inp-role {
+    width: 108px;
+    flex-shrink: 0;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236b7280' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 24px;
+  }
 
   .exp-table {
     padding: 0 16px;
@@ -1426,6 +1686,37 @@
     border-radius: 50%;
     flex-shrink: 0;
   }
+
+  .exp-tag-select {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .exp-tag-select .exp-tag-dot {
+    position: absolute;
+    left: 8px;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .exp-tag-sel {
+    appearance: none;
+    background-color: var(--surface-3);
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-sm);
+    color: var(--fg-2);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 6px 22px 6px 20px;
+    width: 96px;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.15s;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5' stroke-linecap='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+  }
+  .exp-tag-sel:focus { border-color: var(--amber-border); }
   .exp-amt  {
     font-size: 13px;
     font-weight: 600;
@@ -1466,7 +1757,7 @@
     border-radius: var(--r-sm);
     cursor: pointer;
     font-family: inherit;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     white-space: nowrap;
     transition: all 0.13s;
@@ -1487,7 +1778,7 @@
     margin-top: 4px;
   }
   .upcoming-sub-header {
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.07em;
@@ -1506,7 +1797,7 @@
     gap: 8px;
     padding: 0 0 8px;
     border-bottom: 1px solid var(--border-2);
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -1528,7 +1819,7 @@
   .upcoming-row.upcoming-current { color: var(--fg); font-weight: 500; }
   .upcoming-row.upcoming-five { background: var(--orange-soft); }
 
-  .upcoming-period { color: inherit; font-size: 11px; }
+  .upcoming-period { color: inherit; font-size: 12px; }
   .upcoming-current .upcoming-period { font-size: 12px; }
   .text-right { text-align: right; }
   .count-warn { color: var(--orange); font-weight: 700; }
@@ -1539,7 +1830,7 @@
     border: 1px solid var(--orange-border);
     color: var(--orange);
     border-radius: 4px;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
     padding: 1px 5px;
   }
@@ -1594,7 +1885,7 @@
   .cal-weekdays { margin-bottom: 6px; }
   .cal-wday {
     text-align: center;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--fg-4);
     text-transform: uppercase;
@@ -1628,7 +1919,7 @@
     transform: translateX(-50%);
     background: var(--surface-4);
     color: var(--fg);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     white-space: nowrap;
     padding: 4px 9px;
@@ -1710,7 +2001,7 @@
     display: flex;
     align-items: center;
     gap: 5px;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--fg-4);
     font-weight: 500;
   }
